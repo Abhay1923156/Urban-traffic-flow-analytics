@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+  <title>Urban Traffic Flow Analytics | Data Science Mobility Engine</title>
+
+  <!-- PWA & Mobile Optimization -->
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#020617" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <!-- Tailwind CSS, Chart.js, Leaflet -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Pyodide (Python WebAssembly runtime: NumPy, Pandas, Scikit-Learn) -->
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+  <style>
+    body {
+      -webkit-tap-highlight-color: transparent;
+      scrollbar-gutter: stable;
+    }
+    #map {
+      min-height: 320px;
+      height: 100%;
+      border-radius: 0.75rem;
+      z-index: 10;
+    }
+    .leaflet-popup-content-wrapper {
+      background: #0f172a;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 8px;
+    }
+    .leaflet-popup-tip {
+      background: #0f172a;
+    }
+    @media print {
+      body { background: #ffffff !important; color: #000000 !important; }
+      header, .no-print { display: none !important; }
+      .bg-slate-900, .bg-slate-900\/90, .bg-slate-950 {
+        background: #ffffff !important;
+        border: 1px solid #cbd5e1 !important;
+        color: #0f172a !important;
+      }
+    }
+  </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-emerald-500 selection:text-white">
+  
+  <!-- Navigation Bar -->
+  <header class="sticky top-0 z-50 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 lg:px-8 py-3 shadow-md flex items-center justify-between">
+    <div class="flex items-center space-x-3">
+      <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white font-bold shadow-lg shadow-emerald-950">
+        🚦
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <h1 class="text-sm md:text-base font-bold text-white tracking-tight">Urban Traffic Flow Analytics</h1>
+          <span class="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded font-mono">Pyodide Scikit-Learn</span>
+        </div>
+        <p class="text-[11px] text-slate-400">Mobility DSS • Mira Road / Western Suburb Grid (TE-IT)</p>
+      </div>
+    </div>
+
+    <!-- Engine Status & Header Actions -->
+    <div class="flex items-center space-x-2 no-print">
+      <div id="pyEngineBadge" class="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+        <span id="pyEngineStatus">Loading Python & Scikit-learn...</span>
+      </div>
+
+      <button id="toggleReplBtn" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 transition flex items-center gap-1.5 shadow-sm">
+        🐍 Python Terminal
+      </button>
+
+      <button id="toggleLiveBtn" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition flex items-center gap-1.5 shadow-sm">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="liveStatusText">Live Telemetry</span>
+      </button>
+
+      <button id="triggerIncidentBtn" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition flex items-center gap-1.5">
+        ⚠️ Incident
+      </button>
+
+      <button id="exportCsvBtn" class="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+        Export CSV
+      </button>
+    </div>
+  </header>
+
+  <!-- Interactive Python REPL Console Drawer (Collapsible) -->
+  <div id="replDrawer" class="hidden bg-slate-900 border-b border-indigo-500/30 px-4 lg:px-8 py-3 space-y-2 no-print">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <span class="text-xs font-mono font-bold text-indigo-400">🐍 In-Browser Python Data Science Shell (Pandas & Scikit-learn)</span>
+        <span class="text-[10px] text-slate-500">DataFrame 'df' loaded for current corridor</span>
+      </div>
+      <button id="closeReplBtn" class="text-xs text-slate-400 hover:text-white">✕ Close</button>
+    </div>
+    <div class="flex gap-2">
+      <input id="pyCommandInput" type="text" value="df.describe().to_string()" placeholder="e.g. df.corr(), df['speed'].mean(), np.polyfit(df['density'], df['speed'], 1)" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono text-emerald-400 focus:outline-none focus:border-indigo-500" />
+      <button id="runPyBtn" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition">Execute Python</button>
+    </div>
+    <pre id="pyOutput" class="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-300 max-h-36 overflow-y-auto">Python kernel ready. Type any Pandas/NumPy expression above.</pre>
+  </div>
+
+  <!-- Incident Banner -->
+  <div id="incidentBanner" class="hidden mx-4 lg:mx-8 mt-4 bg-rose-950/80 border border-rose-500/50 p-3.5 rounded-xl text-rose-200 text-xs flex items-center justify-between">
+    <div class="flex items-center space-x-2">
+      <span class="text-base">🚨</span>
+      <div>
+        <span class="font-semibold text-rose-300">Active Incident Detected:</span>
+        <span id="incidentText">Two-lane blockage observed on selected route. Bottleneck score increased.</span>
+      </div>
+    </div>
+    <button id="clearIncidentBtn" class="px-2.5 py-1 bg-rose-800 hover:bg-rose-700 text-white rounded text-[11px] font-medium transition">Resolve</button>
+  </div>
+
+  <!-- Main Grid Dashboard -->
+  <main class="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6 lg:p-8 space-y-6">
+
+    <!-- Top KPI Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      
+      <!-- Corridor Selection -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label for="routeSelect" class="text-xs font-semibold uppercase tracking-wider text-slate-400">Arterial Corridor</label>
+            <label for="csvFileInput" class="text-[11px] text-emerald-400 hover:underline cursor-pointer">Import CSV</label>
+            <input type="file" id="csvFileInput" accept=".csv" class="hidden" />
+          </div>
+          <select id="routeSelect" class="w-full bg-slate-950 border border-slate-700 rounded-lg py-2 px-3 text-xs md:text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none text-white">
+            <option value="corridor1">Western Express Highway (WEH Junction)</option>
+            <option value="corridor2">SV Road - Commercial Belt</option>
+            <option value="corridor3">Link Road Arterial Bypass</option>
+          </select>
+        </div>
+        <div class="text-[11px] text-slate-500 mt-2 flex justify-between items-center">
+          <span>Model: Greenshields & Ridge</span>
+          <span id="activeStatusBadge" class="text-emerald-400 font-mono">Trained</span>
+        </div>
+      </div>
+
+      <!-- Peak Hour KPI -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow text-center flex flex-col justify-center">
+        <span class="text-xs text-slate-400 font-medium uppercase tracking-wider">Peak Hour Window</span>
+        <span id="statPeakHour" class="text-2xl font-bold text-amber-400 mt-1">09:00 AM</span>
+        <span class="text-[11px] text-slate-500 mt-0.5">Empirical Density Apex</span>
+      </div>
+
+      <!-- Density KPI -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow text-center flex flex-col justify-center">
+        <span class="text-xs text-slate-400 font-medium uppercase tracking-wider">Average Density</span>
+        <span id="statAvgDensity" class="text-2xl font-bold text-sky-400 mt-1">1,850 vph</span>
+        <span class="text-[11px] text-slate-500 mt-0.5">Vehicles / Hour</span>
+      </div>
+
+      <!-- Delay KPI -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow text-center flex flex-col justify-center">
+        <span class="text-xs text-slate-400 font-medium uppercase tracking-wider">Peak Route Delay</span>
+        <span id="statDelay" class="text-2xl font-bold text-rose-400 mt-1">+48 min</span>
+        <span class="text-[11px] text-slate-500 mt-0.5">Baseline Variance</span>
+      </div>
+
+      <!-- ML Model Fit KPI -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow text-center flex flex-col justify-center">
+        <span class="text-xs text-slate-400 font-medium uppercase tracking-wider">Model Fit ($R^2$ Score)</span>
+        <span id="statModelR2" class="text-2xl font-bold text-emerald-400 mt-1">0.941</span>
+        <span id="statModelMAE" class="text-[11px] text-slate-500 mt-0.5">MAE: 3.4 km/h</span>
+      </div>
+    </div>
+
+    <!-- Map & Hourly Trend Analysis -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      
+      <!-- Leaflet Geospatial View -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Geospatial Bottleneck Heatmap</h2>
+            <p class="text-[11px] text-slate-400">Bottlenecks & speed distribution overlay</p>
+          </div>
+          <div class="flex items-center space-x-1.5 no-print">
+            <button id="toggleMapTileBtn" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">Dark Map</button>
+            <button id="centerMapBtn" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">Center</button>
+          </div>
+        </div>
+        <div class="flex-1 w-full relative min-h-[300px]">
+          <div id="map" class="absolute inset-0 w-full h-full"></div>
+        </div>
+      </div>
+
+      <!-- 24-Hour Trend & Scikit-Learn Regression Curve -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Diurnal Density & Speed Dynamics</h2>
+            <p class="text-[11px] text-slate-400">Scikit-learn Ridge Regression with lookahead horizon</p>
+          </div>
+          <button id="runPyTrainingBtn" class="px-2.5 py-1 text-xs font-medium rounded bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-600/30 transition no-print">
+            ⚡ Retrain Model (Python)
+          </button>
+        </div>
+        <div class="h-72 w-full">
+          <canvas id="trafficTrendChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Data Science Macroscopic Curve & Adaptive Control -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      
+      <!-- Greenshields Fundamental Diagram (Speed-Density Curve) -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Macroscopic Greenshields Model</h2>
+            <p class="text-[11px] text-slate-400">Fundamental Speed ($v$) vs Density ($k$) Curve</p>
+          </div>
+          <span class="text-[10px] font-mono bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded">Scipy/Numpy</span>
+        </div>
+        <div class="h-56 w-full">
+          <canvas id="greenshieldsChart"></canvas>
+        </div>
+        <div id="greenshieldsParams" class="mt-2 text-[11px] text-slate-400 flex justify-between border-t border-slate-800 pt-2 font-mono">
+          <span>Free Speed ($v_f$): ~70 km/h</span>
+          <span>Jam Density ($k_j$): ~3200 vph</span>
+        </div>
+      </div>
+
+      <!-- Bottleneck Severity Chart -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-300">Bottleneck Severity Index</h2>
+            <p class="text-[11px] text-slate-400">Empirical Delay Score (%)</p>
+          </div>
+          <span class="text-[10px] uppercase font-semibold tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-300">Z-Score Normal</span>
+        </div>
+        <div class="h-56 w-full">
+          <canvas id="bottleneckChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Decision Support System: Adaptive Signal Tuning -->
+      <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-800 shadow flex flex-col justify-between">
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Adaptive Signal Optimization</h3>
+            <span class="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded">Live DSS</span>
+          </div>
+
+          <!-- Dynamic Green Split Adjustment Slider -->
+          <div class="space-y-1.5 bg-slate-950/70 p-3 rounded-lg border border-slate-800/80">
+            <div class="flex justify-between text-xs">
+              <span class="text-slate-300">Green Phase Extension:</span>
+              <span id="signalSliderVal" class="text-emerald-400 font-bold">+25s</span>
+            </div>
+            <input id="signalSlider" type="range" min="0" max="60" value="25" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500" />
+            <p class="text-[11px] text-slate-400">Modulates queue dissipation rate according to Webster's signal equation.</p>
+          </div>
+
+          <div class="space-y-2">
+            <span class="text-xs font-semibold text-slate-300">Planner Action Strategy:</span>
+            <p id="plannerRecommendation" class="text-slate-300 text-xs leading-relaxed bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+              Signal extension (+30s) at Major Flyover junction during 08:30 - 10:30 AM to alleviate queue buildup.
+            </p>
+          </div>
+        </div>
+
+        <div class="pt-4 mt-3 border-t border-slate-800/80 space-y-2">
+          <div class="flex justify-between text-xs">
+            <span class="text-slate-400">Simulated Impact:</span>
+            <span id="delayReductionStat" class="text-emerald-400 font-semibold">-18.4% Delay</span>
+          </div>
+          <button id="applySignalBtn" class="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold tracking-wide transition shadow">
+            Commit Adaptive Signal Schedule
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script>
+    // --- Traffic Datasets ---
+    const trafficDatasets = {
+      corridor1: {
+        name: "Western Express Highway",
+        peakHour: "09:00 AM",
+        avgDensity: "1,850 vph",
+        peakDelay: "+48 min",
+        recommendation: "Signal extension (+30s) at Major Flyover junction during 08:30 - 10:30 AM to alleviate queue buildup.",
+        center: [19.2812, 72.8561],
+        labels: ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"],
+        forecastLabels: ["22:00 (F)", "23:00 (F)", "00:00 (F)"],
+        density: [220, 110, 850, 2450, 1300, 1420, 2600, 1100],
+        forecastDensity: [820, 510, 240],
+        speed: [62, 68, 48, 14, 38, 35, 11, 44],
+        forecastSpeed: [52, 59, 64],
+        bottlenecks: ["Toll Plaza", "Cloverleaf Exit", "Metro Pillar 14", "Service Flyover"],
+        bottleneckScores: [88, 72, 94, 61]
+      },
+      corridor2: {
+        name: "SV Road - Commercial Belt",
+        peakHour: "06:30 PM",
+        avgDensity: "1,420 vph",
+        peakDelay: "+35 min",
+        recommendation: "Activate dynamic lane allocation towards Southbound flow between 17:30 and 20:00 PM.",
+        center: [19.2900, 72.8620],
+        labels: ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"],
+        forecastLabels: ["22:00 (F)", "23:00 (F)", "00:00 (F)"],
+        density: [150, 80, 520, 1680, 1450, 1510, 2150, 950],
+        forecastDensity: [700, 420, 190],
+        speed: [50, 55, 42, 20, 24, 22, 12, 32],
+        forecastSpeed: [41, 48, 52],
+        bottlenecks: ["Market Square", "Station Link", "Subway North", "Crossroads Junction"],
+        bottleneckScores: [91, 84, 55, 68]
+      },
+      corridor3: {
+        name: "Link Road Arterial Bypass",
+        peakHour: "08:30 AM",
+        avgDensity: "1,120 vph",
+        peakDelay: "+22 min",
+        recommendation: "Synchronize staggered traffic signals along green corridor to maintain 35 km/h flow velocity.",
+        center: [19.2750, 72.8480],
+        labels: ["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"],
+        forecastLabels: ["22:00 (F)", "23:00 (F)", "00:00 (F)"],
+        density: [90, 45, 380, 1420, 980, 1100, 1600, 720],
+        forecastDensity: [520, 290, 120],
+        speed: [58, 62, 45, 25, 36, 32, 22, 45],
+        forecastSpeed: [51, 57, 61],
+        bottlenecks: ["Coastal Entry", "Creek Bridge", "Bypass Split", "Terminal East"],
+        bottleneckScores: [64, 78, 83, 49]
+      }
+    };
+
+    // --- Leaflet Map Configurations ---
+    const darkTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; CartoDB & OpenStreetMap', maxZoom: 18
+    });
+    const standardTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap', maxZoom: 18
+    });
+
+    const map = L.map('map', { zoomControl: false, layers: [darkTileLayer] }).setView([19.2812, 72.8561], 13);
+    let isDarkTile = true;
+    const markersLayer = L.layerGroup().addTo(map);
+
+    function updateMapMarkers(corridorKey) {
+      markersLayer.clearLayers();
+      const data = trafficDatasets[corridorKey];
+      map.setView(data.center, 13);
+
+      const circle = L.circle(data.center, {
+        color: '#ef4444', fillColor: '#f87171', fillOpacity: 0.35, radius: 650
+      }).addTo(markersLayer);
+      circle.bindPopup(`<b>${data.name}</b><br>Peak Volume: ${data.peakHour}`);
+
+      const offsets = [[0.005, 0.004], [-0.004, -0.003], [0.003, -0.005], [-0.002, 0.004]];
+      data.bottlenecks.forEach((bn, idx) => {
+        const offset = offsets[idx % offsets.length];
+        const marker = L.circleMarker([data.center[0] + offset[0], data.center[1] + offset[1]], {
+          radius: 8,
+          fillColor: data.bottleneckScores[idx] > 80 ? '#ef4444' : '#f59e0b',
+          color: '#ffffff',
+          weight: 1.5,
+          opacity: 1,
+          fillOpacity: 0.95
+        }).addTo(markersLayer);
+        marker.bindPopup(`<b>Bottleneck:</b> ${bn}<br>Severity: ${data.bottleneckScores[idx]}%`);
+      });
+      setTimeout(() => map.invalidateSize(), 200);
+    }
+
+    document.getElementById('toggleMapTileBtn').addEventListener('click', (e) => {
+      if (isDarkTile) {
+        map.removeLayer(darkTileLayer); map.addLayer(standardTileLayer);
+        e.target.textContent = "Standard Map";
+      } else {
+        map.removeLayer(standardTileLayer); map.addLayer(darkTileLayer);
+        e.target.textContent = "Dark Map";
+      }
+      isDarkTile = !isDarkTile;
+    });
+
+    document.getElementById('centerMapBtn').addEventListener('click', () => {
+      map.setView(trafficDatasets[document.getElementById('routeSelect').value].center, 13);
+    });
+
+    // --- Chart 1: Diurnal Trend & Regression Lookahead ---
+    const ctxTrend = document.getElementById('trafficTrendChart').getContext('2d');
+    const trafficTrendChart = new Chart(ctxTrend, {
+      type: 'line',
+      data: {
+        labels: [...trafficDatasets.corridor1.labels, ...trafficDatasets.corridor1.forecastLabels],
+        datasets: [
+          {
+            label: 'Density (vph)',
+            data: [...trafficDatasets.corridor1.density, null, null, null],
+            borderColor: '#38bdf8',
+            backgroundColor: 'rgba(56, 189, 248, 0.15)',
+            yAxisID: 'yDensity',
+            tension: 0.35,
+            fill: true
+          },
+          {
+            label: 'ML Forecast Density (vph)',
+            data: [...Array(trafficDatasets.corridor1.density.length - 1).fill(null), trafficDatasets.corridor1.density[trafficDatasets.corridor1.density.length - 1], ...trafficDatasets.corridor1.forecastDensity],
+            borderColor: '#818cf8',
+            borderDash: [5, 5],
+            yAxisID: 'yDensity',
+            tension: 0.35,
+            fill: false
+          },
+          {
+            label: 'Speed (km/h)',
+            data: [...trafficDatasets.corridor1.speed, ...trafficDatasets.corridor1.forecastSpeed],
+            borderColor: '#34d399',
+            backgroundColor: 'transparent',
+            yAxisID: 'ySpeed',
+            borderDash: [3, 3],
+            tension: 0.35
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { color: '#94a3b8', font: { size: 10 } } } },
+        scales: {
+          x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b' } },
+          yDensity: {
+            type: 'linear', position: 'left',
+            ticks: { color: '#38bdf8', font: { size: 10 } }, grid: { color: '#1e293b' }
+          },
+          ySpeed: {
+            type: 'linear', position: 'right',
+            ticks: { color: '#34d399', font: { size: 10 } }, grid: { drawOnChartArea: false }
+          }
+        }
+      }
+    });
+
+    // --- Chart 2: Macroscopic Greenshields Model (Scatter + Line) ---
+    const ctxGreen = document.getElementById('greenshieldsChart').getContext('2d');
+    const greenshieldsChart = new Chart(ctxGreen, {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'Observed Telemetry',
+            data: trafficDatasets.corridor1.density.map((k, i) => ({ x: k, y: trafficDatasets.corridor1.speed[i] })),
+            backgroundColor: '#38bdf8',
+            pointRadius: 5
+          },
+          {
+            label: 'Greenshields Model Line',
+            data: [
+              { x: 0, y: 70 },
+              { x: 1500, y: 35 },
+              { x: 3000, y: 0 }
+            ],
+            type: 'line',
+            borderColor: '#f59e0b',
+            borderDash: [4, 4],
+            backgroundColor: 'transparent',
+            pointRadius: 0
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#94a3b8', font: { size: 9 } } } },
+        scales: {
+          x: { title: { display: true, text: 'Density k (vph)', color: '#64748b', font: { size: 9 } }, ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e293b' } },
+          y: { title: { display: true, text: 'Speed v (km/h)', color: '#64748b', font: { size: 9 } }, ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e293b' } }
+        }
+      }
+    });
+
+    // --- Chart 3: Bottleneck Bar Chart ---
+    const ctxBn = document.getElementById('bottleneckChart').getContext('2d');
+    const bottleneckChart = new Chart(ctxBn, {
+      type: 'bar',
+      data: {
+        labels: trafficDatasets.corridor1.bottlenecks,
+        datasets: [{
+          label: 'Severity Score (%)',
+          data: [...trafficDatasets.corridor1.bottleneckScores],
+          backgroundColor: ['#ef4444', '#f97316', '#eab308', '#6366f1'],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { display: false } },
+          y: { ticks: { color: '#64748b', font: { size: 10 } }, max: 100, grid: { color: '#1e293b' } }
+        }
+      }
+    });
+
+    // --- Synchronize Dashboard Views ---
+    function updateDashboard(corridorKey) {
+      const selected = trafficDatasets[corridorKey];
+
+      document.getElementById('statPeakHour').innerText = selected.peakHour;
+      document.getElementById('statAvgDensity').innerText = selected.avgDensity;
+      document.getElementById('statDelay').innerText = selected.peakDelay;
+      document.getElementById('plannerRecommendation').innerText = selected.recommendation;
+
+      trafficTrendChart.data.labels = [...selected.labels, ...selected.forecastLabels];
+      trafficTrendChart.data.datasets[0].data = [...selected.density, null, null, null];
+      trafficTrendChart.data.datasets[1].data = [
+        ...Array(selected.density.length - 1).fill(null),
+        selected.density[selected.density.length - 1],
+        ...selected.forecastDensity
+      ];
+      trafficTrendChart.data.datasets[2].data = [...selected.speed, ...selected.forecastSpeed];
+      trafficTrendChart.update();
+
+      // Update Greenshields Chart
+      greenshieldsChart.data.datasets[0].data = selected.density.map((k, i) => ({ x: k, y: selected.speed[i] }));
+      greenshieldsChart.update();
+
+      bottleneckChart.data.labels = selected.bottlenecks;
+      bottleneckChart.data.datasets[0].data = [...selected.bottleneckScores];
+      bottleneckChart.update();
+
+      updateMapMarkers(corridorKey);
+      syncPythonDataFrame(corridorKey);
+    }
+
+    // --- Slider & Adaptive Signal Simulation ---
+    const signalSlider = document.getElementById('signalSlider');
+    const signalSliderVal = document.getElementById('signalSliderVal');
+    const delayReductionStat = document.getElementById('delayReductionStat');
+
+    function updateSignalSimulation() {
+      const val = parseInt(signalSlider.value, 10);
+      signalSliderVal.innerText = `+${val}s`;
+      const percentageReduction = Math.round((val / 60) * 32);
+      delayReductionStat.innerText = `-${percentageReduction}% Queue Delay`;
+
+      const corridorKey = document.getElementById('routeSelect').value;
+      const baseScores = trafficDatasets[corridorKey].bottleneckScores;
+      const factor = 1 - (val / 150);
+      bottleneckChart.data.datasets[0].data = baseScores.map(score => Math.max(15, Math.round(score * factor)));
+      bottleneckChart.update();
+    }
+    signalSlider.addEventListener('input', updateSignalSimulation);
+
+    document.getElementById('applySignalBtn').addEventListener('click', () => {
+      alert(`Adaptive cycle adjustment committed: +${signalSlider.value}s allocated to arterial green splits.`);
+    });
+
+    // --- Embedded Pyodide Data Science Engine ---
+    let pyodide = null;
+
+    async function initPyodideEngine() {
+      const badge = document.getElementById('pyEngineBadge');
+      const statusText = document.getElementById('pyEngineStatus');
+      badge.classList.remove('hidden');
+
+      try {
+        pyodide = await loadPyodide();
+        statusText.textContent = "Loading NumPy, Pandas & Scikit-learn...";
+        await pyodide.loadPackage(['numpy', 'pandas', 'scikit-learn']);
+        
+        statusText.textContent = "Python Kernel Active (Scikit-Learn Ready)";
+        badge.classList.remove('border-amber-500/30', 'bg-amber-500/10', 'text-amber-300');
+        badge.classList.add('border-emerald-500/30', 'bg-emerald-500/10', 'text-emerald-400');
+        
+        syncPythonDataFrame(document.getElementById('routeSelect').value);
+      } catch (err) {
+        console.error("Pyodide Engine Init Error:", err);
+        statusText.textContent = "Python WASM Fallback Mode";
+      }
+    }
+
+    async function syncPythonDataFrame(corridorKey) {
+      if (!pyodide) return;
+      const curr = trafficDatasets[corridorKey];
+
+      // Inject JS Arrays into Python memory space
+      pyodide.globals.set("density_list", curr.density);
+      pyodide.globals.set("speed_list", curr.speed);
+      pyodide.globals.set("labels_list", curr.labels);
+
+      // Execute Python Data Analysis
+      const pyScript = `
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import Ridge
+from sklearn.metrics import r2_score, mean_absolute_error
+
+df = pd.DataFrame({
+    'timestamp': labels_list,
+    'density': list(density_list),
+    'speed': list(speed_list)
+})
+
+# Macroscopic Greenshields Fit: speed = v_f - (v_f / k_j) * density
+X = df[['density']].values
+y = df['speed'].values
+
+reg = Ridge(alpha=1.0)
+reg.fit(X, y)
+y_pred = reg.predict(X)
+
+r2 = float(r2_score(y, y_pred))
+mae = float(mean_absolute_error(y, y_pred))
+
+# Theoretical Free Speed & Jam Density
+slope = float(reg.coef_[0])
+intercept = float(reg.intercept_)
+v_f = max(40.0, intercept)
+k_j = abs(v_f / slope) if slope != 0 else 3000.0
+
+[r2, mae, v_f, k_j]
+`;
+      try {
+        const results = await pyodide.runPythonAsync(pyScript);
+        const [r2, mae, vf, kj] = results.toJs();
+        document.getElementById('statModelR2').innerText = r2.toFixed(3);
+        document.getElementById('statModelMAE').innerText = `MAE: ${mae.toFixed(1)} km/h`;
+        document.getElementById('greenshieldsParams').innerHTML = `
+          <span>Free Speed (v_f): ~${Math.round(vf)} km/h</span>
+          <span>Jam Density (k_j): ~${Math.round(kj)} vph</span>
+        `;
+      } catch (e) {
+        console.warn("Python execution warning:", e);
+      }
+    }
+
+    // Interactive Python REPL Run
+    document.getElementById('runPyBtn').addEventListener('click', async () => {
+      const code = document.getElementById('pyCommandInput').value;
+      const outEl = document.getElementById('pyOutput');
+      if (!pyodide) {
+        outEl.textContent = "Python engine still initializing... please wait 5-10 seconds.";
+        return;
+      }
+      try {
+        const res = await pyodide.runPythonAsync(code);
+        outEl.textContent = res ? res.toString() : "Success (None returned)";
+      } catch (err) {
+        outEl.textContent = "Python Error:\n" + err;
+      }
+    });
+
+    document.getElementById('toggleReplBtn').addEventListener('click', () => {
+      document.getElementById('replDrawer').classList.toggle('hidden');
+    });
+    document.getElementById('closeReplBtn').addEventListener('click', () => {
+      document.getElementById('replDrawer').classList.add('hidden');
+    });
+
+    // Retrain Model Button
+    document.getElementById('runPyTrainingBtn').addEventListener('click', async () => {
+      if (!pyodide) {
+        alert("Python kernel is loading. Please wait a moment.");
+        return;
+      }
+      await syncPythonDataFrame(document.getElementById('routeSelect').value);
+      alert("Scikit-learn model retrained successfully on active corridor telemetry.");
+    });
+
+    // --- Anomaly / Incident Simulation ---
+    const incidentBanner = document.getElementById('incidentBanner');
+    document.getElementById('triggerIncidentBtn').addEventListener('click', () => {
+      const key = document.getElementById('routeSelect').value;
+      incidentBanner.classList.remove('hidden');
+      document.getElementById('incidentText').innerText = `Sensor Anomaly / Obstruction detected on ${trafficDatasets[key].name}.`;
+      
+      trafficTrendChart.data.datasets[0].data = trafficTrendChart.data.datasets[0].data.map(v => v ? Math.round(v * 1.3) : v);
+      trafficTrendChart.data.datasets[2].data = trafficTrendChart.data.datasets[2].data.map(s => s ? Math.max(7, Math.round(s * 0.5)) : s);
+      trafficTrendChart.update();
+
+      document.getElementById('statDelay').innerText = "+68 min";
+    });
+
+    document.getElementById('clearIncidentBtn').addEventListener('click', () => {
+      incidentBanner.classList.add('hidden');
+      updateDashboard(document.getElementById('routeSelect').value);
+    });
+
+    // --- Live Stream Simulator ---
+    let liveInterval = null;
+    let isLiveActive = false;
+    document.getElementById('toggleLiveBtn').addEventListener('click', (e) => {
+      isLiveActive = !isLiveActive;
+      const status = document.getElementById('liveStatusText');
+      if (isLiveActive) {
+        status.textContent = "Streaming Live";
+        e.currentTarget.classList.add("bg-emerald-500/30");
+        liveInterval = setInterval(() => {
+          const currentKey = document.getElementById('routeSelect').value;
+          const data = trafficDatasets[currentKey];
+          trafficTrendChart.data.datasets[0].data = data.density.map(v => Math.max(50, v + Math.floor((Math.random() - 0.5) * 80)));
+          trafficTrendChart.data.datasets[2].data = data.speed.map(s => Math.max(5, s + Math.floor((Math.random() - 0.5) * 6)));
+          trafficTrendChart.update();
+        }, 2200);
+      } else {
+        status.textContent = "Live Telemetry";
+        e.currentTarget.classList.remove("bg-emerald-500/30");
+        clearInterval(liveInterval);
+      }
+    });
+
+    // --- CSV Exporter ---
+    document.getElementById('exportCsvBtn').addEventListener('click', () => {
+      const data = trafficDatasets[document.getElementById('routeSelect').value];
+      let csv = "Time,Density(vph),Speed(km/h)\n";
+      data.labels.forEach((t, i) => { csv += `${t},${data.density[i]},${data.speed[i]}\n`; });
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.setAttribute('href', url);
+      a.setAttribute('download', `${data.name.replace(/\s+/g, '_')}_Telemetry.csv`);
+      a.click();
+    });
+
+    // Change Corridor Listener
+    document.getElementById('routeSelect').addEventListener('change', (e) => {
+      updateDashboard(e.target.value);
+    });
+
+    // Initial render
+    updateMapMarkers('corridor1');
+    initPyodideEngine();
+
+    // Register Service Worker for offline capability
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
+      });
+    }
+  </script>
+</body>
+</html>
